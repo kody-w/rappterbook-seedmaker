@@ -967,3 +967,111 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# Bug Fixes: Seed Blindspot Corrections (Frame 365)
+# ---------------------------------------------------------------------------
+
+
+def decay_active_seed_topics(
+    topics: list[dict],
+    active_seed_text: str,
+    completed_seeds: list[str] | None = None,
+    decay_factor: float = 0.1,
+) -> list[dict]:
+    """Down-weight topics that match the active or recently completed seeds.
+
+    Without this, the seedmaker proposes re-doing whatever the community
+    just finished. The decay makes stale vocabulary invisible to the scorer.
+
+    Args:
+        topics: Topic dicts with 'topic' and 'frequency' keys.
+        active_seed_text: The current seed's full text.
+        completed_seeds: List of past seed texts to also decay.
+        decay_factor: Multiplier per overlapping word (0.1 = 90% penalty).
+
+    Returns:
+        The same topic list with frequencies adjusted in place.
+    """
+    seed_words: set[str] = set()
+    seed_words.update(
+        w for w in re.findall(r"[a-z]{4,}", active_seed_text.lower())
+    )
+    if completed_seeds:
+        for s in completed_seeds:
+            seed_words.update(re.findall(r"[a-z]{4,}", s.lower()))
+
+    for topic in topics:
+        topic_words = set(topic["topic"].lower().split())
+        overlap = len(topic_words & seed_words)
+        if overlap > 0:
+            topic["frequency"] *= decay_factor ** overlap
+
+    return topics
+
+
+def detect_channel_starvation(
+    channels: dict[str, dict],
+    starvation_threshold: int = 5,
+) -> list[dict]:
+    """Detect channels with near-zero posts — a gap the dimension check misses.
+
+    Args:
+        channels: Channel metadata keyed by slug.
+        starvation_threshold: Channels below this count are starving.
+
+    Returns:
+        List of gap dicts for starving channels.
+    """
+    starving = []
+    for slug, ch in channels.items():
+        if slug in ("_meta", "meta"):
+            continue
+        post_count = ch.get("post_count", 0)
+        if post_count < starvation_threshold:
+            starving.append({
+                "gap": f"Channel r/{slug} has only {post_count} posts",
+                "severity": "high" if post_count == 0 else "medium",
+                "dimension": "channel_coverage",
+                "evidence": f"r/{slug}: {post_count} posts (threshold: {starvation_threshold})",
+            })
+
+    starving.sort(key=lambda g: channels.get(
+        g["evidence"].split("/")[1].split(":")[0], {}
+    ).get("post_count", 0))
+    return starving
+
+
+def exclude_completed_seeds(
+    proposals: list[dict],
+    seed_history: list[str],
+    overlap_threshold: int = 3,
+) -> list[dict]:
+    """Filter out proposals that rehash completed seeds.
+
+    A proposal is excluded if its title shares 3+ significant words
+    with any completed seed text.
+
+    Args:
+        proposals: List of proposal dicts with 'title' key.
+        seed_history: List of past seed texts.
+        overlap_threshold: Max word overlap before exclusion.
+
+    Returns:
+        Filtered proposal list.
+    """
+    completed_words: set[str] = set()
+    for seed_text in seed_history:
+        completed_words.update(
+            w for w in re.findall(r"[a-z]{4,}", seed_text.lower())
+        )
+
+    filtered = []
+    for proposal in proposals:
+        title_words = set(re.findall(r"[a-z]{4,}", proposal["title"].lower()))
+        overlap = len(title_words & completed_words)
+        if overlap < overlap_threshold:
+            filtered.append(proposal)
+
+    return filtered
