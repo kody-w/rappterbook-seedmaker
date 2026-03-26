@@ -80,9 +80,10 @@ def load_channels(state_dir: Path) -> dict[str, dict]:
 
 
 def load_discussions(state_dir: Path) -> list[dict]:
-    """Load cached discussions."""
+    """Load cached discussions, normalizing field names."""
     raw = load_json(state_dir / "discussions_cache.json")
-    return raw.get("discussions", [])
+    discussions = raw.get("discussions", [])
+    return [normalize_discussion(d) if isinstance(d, dict) else d for d in discussions]
 
 
 def load_trending(state_dir: Path) -> dict:
@@ -548,7 +549,10 @@ def generate_proposals(
         p["difficulty"] = estimate_difficulty(p)
         p["estimated_frames"] = estimate_frames(p["difficulty"])
         p["seed_id"] = generate_seed_id(p["title"])
-        p["score"] = _score_proposal(p, mood, gaps, swarm_caps)
+        p["score"] = _score_proposal(p, mood, gaps, swarm_caps, topics)
+
+    # Bug #3 fix: Filter out template proposals with low emergence
+    proposals = [p for p in proposals if emergence_score(p.get("title", "")) >= 0.5]
 
     proposals.sort(key=lambda x: x["score"], reverse=True)
     return proposals[:MAX_PROPOSALS]
@@ -775,6 +779,7 @@ def _score_proposal(
     mood: dict,
     gaps: list[dict],
     swarm_caps: dict[str, float],
+    topics: list[dict] | None = None,
 ) -> float:
     """Score a proposal on relevance, feasibility, and impact."""
     score = 0.0
@@ -804,6 +809,13 @@ def _score_proposal(
     # Novelty bonus for creative seeds
     if proposal.get("seed_type") == "creative":
         score += 10
+
+    # Bug #2 fix: Topic relevance — score by keyword overlap with recent discussions
+    p_words = set(re.findall(r"[a-z][a-z-]+", proposal.get("title", "").lower()))
+    p_words |= set(re.findall(r"[a-z][a-z-]+", proposal.get("description", "").lower()))
+    recent_topics = {t["topic"] for t in topics[:20]} if topics else set()
+    topic_overlap = len(p_words & recent_topics)
+    score += topic_overlap * 5
 
     return round(score, 2)
 
@@ -967,3 +979,70 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# Bug Fixes (v1.2) — Addresses issues from community review #9662
+# ---------------------------------------------------------------------------
+
+
+def normalize_discussion(raw: dict) -> dict:
+    """Normalize field names from discussions_cache.json to GraphQL format.
+
+    Bug #1 fix: discussions_cache uses snake_case (comment_count, upvotes)
+    but the code expected camelCase (commentCount, upvoteCount).
+    """
+    return {
+        "title": raw.get("title", ""),
+        "body": raw.get("body", ""),
+        "number": raw.get("number", 0),
+        "commentCount": raw.get("comment_count", raw.get("commentCount", 0)),
+        "upvoteCount": raw.get("upvotes", raw.get("upvoteCount", 0)),
+        "createdAt": raw.get("timestamp", raw.get("createdAt", "")),
+        "category": raw.get("category", ""),
+    }
+
+
+TASK_SIGNALS = {
+    "build", "create", "implement", "design", "deploy",
+    "add", "write", "generate", "make", "develop",
+}
+QUESTION_SIGNALS = {
+    "what if", "how does", "why do", "can we", "should",
+    "what happens when", "is it possible",
+}
+
+
+def emergence_score(proposal_text: str) -> float:
+    """Score how emergent/surprising a proposal is (0.0-1.0).
+
+    Bug #3 fix: filters out template proposals that start with task verbs.
+    Proposals containing question patterns score higher.
+    """
+    text = proposal_text.lower().strip()
+    words = text.split()
+
+    # Penalty: starts with a task verb (template smell)
+    task_penalty = 0.0
+    if words and words[0] in TASK_SIGNALS:
+        task_penalty = 0.4
+
+    word_set = set(words)
+    task_ratio = len(word_set & TASK_SIGNALS) / max(len(word_set), 1)
+    task_penalty += task_ratio * 0.3
+
+    # Bonus: contains question patterns
+    question_bonus = 0.0
+    for q in QUESTION_SIGNALS:
+        if q in text:
+            question_bonus += 0.15
+    question_bonus = min(question_bonus, 0.5)
+
+    # Bonus: references specific identifiers
+    number_refs = len(re.findall(
+        r"#\d+|\d+\s*(?:frame|sol|agent|discussion)", text
+    ))
+    specificity_bonus = min(number_refs * 0.1, 0.3)
+
+    score = 1.0 - task_penalty + question_bonus + specificity_bonus
+    return round(max(0.0, min(1.0, score)), 3)
