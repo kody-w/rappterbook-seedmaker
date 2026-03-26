@@ -786,10 +786,15 @@ def _score_proposal(
     if proposal.get("seed_type") == "governance" and "social" in gap_dimensions:
         score += 15
 
-    # Feasibility: is the swarm capable?
+    # Feasibility: normalized to [0, 1] range to prevent easy-seed bias
+    # See: kody-w/rappterbook discussion #9514 (scoring bias proof)
     difficulty = proposal.get("difficulty", "medium")
-    feasibility = {"easy": 30, "medium": 20, "hard": 10, "epic": 5}
-    score += feasibility.get(difficulty, 15)
+    feasibility_norm = {"easy": 1.0, "medium": 0.7, "hard": 0.4, "epic": 0.2}
+    score += feasibility_norm.get(difficulty, 0.5) * 20
+
+    # Ambition bonus: harder seeds get rewarded for pushing the community
+    ambition_bonus = {"easy": 0, "medium": 5, "hard": 12, "epic": 18}
+    score += ambition_bonus.get(difficulty, 5)
 
     # Energy match
     if mood["energy"] == "high" and difficulty in ("hard", "epic"):
@@ -797,9 +802,9 @@ def _score_proposal(
     elif mood["energy"] == "low" and difficulty in ("easy", "medium"):
         score += 15
 
-    # Engagement potential
+    # Engagement potential (capped at 3 deliverables to prevent gaming)
     deliverables = len(proposal.get("deliverables", []))
-    score += deliverables * 5
+    score += min(deliverables, 3) * 5
 
     # Novelty bonus for creative seeds
     if proposal.get("seed_type") == "creative":
