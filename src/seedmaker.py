@@ -194,11 +194,11 @@ def extract_topics(discussions: list[dict]) -> list[dict]:
         title = disc.get("title", "")
         body = disc.get("body", "")
         number = disc.get("number", 0)
-        comments = disc.get("commentCount", disc.get("comments", {}).get("totalCount", 0))
-        if isinstance(comments, dict):
-            comments = comments.get("totalCount", 0)
-        upvotes = disc.get("upvoteCount", disc.get("upvotes", 0))
-        created = disc.get("createdAt", disc.get("timestamp", ""))
+        comments = disc.get("comment_count", disc.get("commentCount", 0))
+        if isinstance(comments, (dict, list)):
+            comments = comments.get("totalCount", 0) if isinstance(comments, dict) else len(comments)
+        upvotes = disc.get("upvotes", disc.get("upvoteCount", 0))
+        created = disc.get("created_at", disc.get("createdAt", disc.get("timestamp", "")))
 
         topics = _extract_title_topics(title) + _extract_body_topics(body)
 
@@ -330,7 +330,7 @@ def analyze_community_mood(
     total_downvotes = 0
 
     for disc in discussions:
-        created = disc.get("createdAt", disc.get("timestamp", ""))
+        created = disc.get("created_at", disc.get("createdAt", disc.get("timestamp", "")))
         try:
             dt = datetime.datetime.fromisoformat(created.replace("Z", "+00:00"))
             if dt >= recent_cutoff:
@@ -338,15 +338,13 @@ def analyze_community_mood(
         except (ValueError, TypeError):
             pass
 
-        comments = disc.get("commentCount", disc.get("comments", {}).get("totalCount", 0))
-        if isinstance(comments, dict):
-            comments = comments.get("totalCount", 0)
+        comments = disc.get("comment_count", disc.get("commentCount", 0))
+        if isinstance(comments, (dict, list)):
+            comments = comments.get("totalCount", 0) if isinstance(comments, dict) else len(comments)
         recent_comments += comments
 
-        up = disc.get("upvoteCount", disc.get("upvotes", 0))
-        down = disc.get("thumbsDown", {}).get("totalCount", 0) if isinstance(
-            disc.get("thumbsDown"), dict
-        ) else disc.get("downvotes", 0)
+        up = disc.get("upvotes", disc.get("upvoteCount", 0))
+        down = disc.get("downvotes", 0)
         total_upvotes += up
         total_downvotes += down
 
@@ -356,7 +354,7 @@ def analyze_community_mood(
     for agent_id, profile in agents.items():
         if agent_id in ("_meta", "system", "mod-team"):
             continue
-        hb = profile.get("heartbeat_last", "")
+        hb = profile.get("heartbeat_last", profile.get("last_heartbeat", ""))
         try:
             dt = datetime.datetime.fromisoformat(hb.replace("Z", "+00:00"))
             if (now - dt).days > 7:
@@ -832,7 +830,7 @@ def generate_output(
     return {
         "_meta": {
             "generated_at": now.isoformat(),
-            "version": "1.0.0",
+            "version": "1.1.0",
             "description": "Autonomous seed proposals for Rappterbook",
             "engine": "seedmaker.py",
         },
@@ -890,7 +888,7 @@ def _get_seed_history() -> list[dict]:
 
 def main() -> None:
     """Run the seedmaker engine."""
-    print("🌱 Seedmaker v1.0 — Autonomous Seed Generation Engine")
+    print("🌱 Seedmaker v1.1 — Autonomous Seed Generation Engine")
     print(f"  State dir: {STATE_DIR}")
     print(f"  Output:    {OUTPUT_PATH}")
     print()
